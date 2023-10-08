@@ -1,0 +1,414 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html>
+<head>
+<meta content="text/html; charset=UTF-8" http-equiv="Content-Type">
+
+  <title>Coarse Rasterization in CudaRaster - w00t </title>
+
+  <!-- some meta information (search engines might read this) -->
+  <meta name="title" content="Coarse Rasterization in CudaRaster">
+  <meta name="generator" content="Nucleus CMS v3.64">
+  <meta name="description" content="Coarse Rasterization in CudaRaster">
+
+  <!-- stylesheet definition (points to the place where colors -->
+  <!-- and layout is defined -->
+  
+
+  <!-- prevent caching (can be removed) -->
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Cache-Control" content="no-cache, must-revalidate">
+  <meta http-equiv="Expires" content="-1">
+  
+  <!-- extra navigational links -->
+  <link rel="bookmark" title="Nucleus" href="http://nucleuscms.org/">
+  <link rel="alternate" type="application/rss+xml" title="RSS" href="http://bpeers.com/blog/xml-rss2.php">
+  <link rel="archives" title="Archives" href="http://bpeers.com/blog/?archivelist=1&amp;catid=2">
+  <link rel="top" title="Today" href="http://bpeers.com/blog/">
+  <link rel="next" href="http://bpeers.com/blog/?itemid=1180&amp;catid=2" title="Next Item">
+  <link rel="prev" href="http://bpeers.com/blog/?itemid=1167&amp;catid=2" title="Previous Item">
+  <link rel="up" href="http://bpeers.com/blog/?blogid=1&amp;catid=2" title="Today">
+
+
+<link media="all" href="/cudaraster/default_1003.css" type="text/css" rel="stylesheet">
+</head>
+<body>
+
+
+<!-- here starts the code that will be displayed in your browser -->
+<div class="contents">
+
+ <!-- page title -->
+ <h1>w00t</h1>
+
+ <!-- this is a normally hidden link, included for accessibility reasons -->
+ <a href="#navigation" class="skip">Jump to navigation</a>
+
+ <!-- inserts the selected item using the template named 'grey/full'     -->
+ 
+<h3 class="item"><div class="date">23/11/12</div>
+<img src="pc.png" valign="bottom" border="0" align="bottom"> Coarse Rasterization in CudaRaster</h3>
+
+<div class="itembody">
+  In the quest to demistify the high performance magic of <a href="http://code.google.com/p/cudaraster/">CudaRaster</a> by Samuli Laine and Tero Karras, it's time for a closer look at the coarse rasterization stage.  As <a href="http://research.nvidia.com/sites/default/files/publications/laine2011hpg_paper.pdf">the paper</a> explains, this stage merges the per-bin queues, and adds the triangles to a queue for each coarse tile it overlaps.  Thanks to the authors' generous open-sourcing of the code, we can take a look at how that works exactly.<br>
+<br>
+
+  <br><br>
+  <ul><li>The preceding stage, binRaster, was discussed <a href="part1.html" indepth="true">earlier</a>.</li><br>
+<li><a href="part3.html" indepth="true">Triangle Setup</a> is now also covered.</li></ul><br>
+<br>
+I've uploaded an <a href="http://bpeers.com/dump/CoarseRaster.inl">annotated "personal copy" of coarseRaster.inl</a>; it is taken from version 1.1 but with some extra comments that I added as I worked my way through it.  So just to be very clear, I've <i>only</i> added some comments which may or may not be true, helpful or interesting. Otherwise I've made no changes, and the file is most definitely still entirely...<br>
+<pre><font color="darkgreen"> *  Copyright (c) 2009-2011, NVIDIA Corporation<br>
+ *  All rights reserved. [...]<br>
+ *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"</font></pre><br>
+Hopefully it helps understanding the code -- but to use this in your project, just go to the source. Comments that I've added are tagged with "--bpe".  There are a few magic bits that I've commented but aren't discussed in this post.<br>
+<br>
+<h2>Overview</h2><br>
+Digging through the code (and this post) probably makes more sense if you've read the paper.  I want to focus on the smarts that are in the actual implementation.<br>
+<br>
+The overall flow of the algorithms is as follows:<br>
+<br>
+<ul><li>Prelude: sort the 128x128 bins in descending order of triangle count;</li><br>
+<li>Pick a new bin to process;</li><br>
+<li>Grab at least 512, at most 1024 triangles from the bin's 16 input queues, taking care that order is preserved;</li><br>
+<li>For each triangle, set the bits for the coarse tiles that it overlaps;</li><br>
+<li>Count how much space each coarse tile needs to write its overlapping triangles; allocate segments;</li><br>
+<li>Write out the triangle indices for each coarse tile it overlaps;</li></ul><br>
+<br>
+The good news is that several pieces of code are quite similar to <a href="default_064.html" indepth="true">the binRaster</a> stage, for example the triangle rasterization, and clever popc-based prefix sums.<br>
+<br>
+The unfortunate news is that innocent looking steps, like "write out the triangle index", are surprisingly involved.<br>
+<br>
+Before digging into bit twiddling and prefix summing, it's important to understand the overall data layout.  Both input and output have the same structure -- a linked list of segments.<br>
+<br>
+The binRaster phase made a queue for each bin <i>for each SM/CTA</i>.  Thus the input for coarseRaster, once we've picked a bin, is 16 queues with triangles, as pointed at by binSegFirst.<br>
+<br>
+The output however is a single linked list per coarse tile.  That, at least, simplifies things a little bit.  Here's a refresher, with a typo, of the binRaster output, which is this stage's input.<br>
+<br>
+<figure>
+	<a href="20121114-binraster.png">
+		<img src="20121114-binraster.png" width="100%" />
+	</a>
+	<figcaption>
+		Correction: there are a maximum of 16x16 bins, so there are 256 rows in binFirstSeg, not 128.
+	</figcaption>
+</figure>
+<br>
+<br>
+The <i>input</i> segments are 512 triangles per bin.  <br>
+The <i>output</i> segments are 32 triangles per coarse tile.  <br>
+<br>
+There are (up to) 16x16 <i>bins</i> of 128x128 pixels each.  <br>
+There are 16x16 <i>coarse tiles</i> per bin of 8x8 pixels each.<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"><pre><cpp><br>
+    <span style="color: rgb(0, 128, 0);">//--bpe Input from binRaster phase.  Linked lists of segments, each 512 triangles big.</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 0, 255);">const</span><span style="color: rgb(0, 0, 0);">  S32*              binFirstSeg     = (<span style="color: rgb(0, 0, 255);">const</span><span style="color: rgb(0, 0, 0);">  S32*)c_crParams.binFirstSeg;<br>
+    <span style="color: rgb(0, 0, 255);">const</span><span style="color: rgb(0, 0, 0);">  S32*              binTotal        = (<span style="color: rgb(0, 0, 255);">const</span><span style="color: rgb(0, 0, 0);">  S32*)c_crParams.binTotal;<br>
+    <span style="color: rgb(0, 0, 255);">const</span><span style="color: rgb(0, 0, 0);">  S32*              binSegData      = (<span style="color: rgb(0, 0, 255);">const</span><span style="color: rgb(0, 0, 0);">  S32*)c_crParams.binSegData;<br>
+    <span style="color: rgb(0, 0, 255);">const</span><span style="color: rgb(0, 0, 0);">  S32*              binSegNext      = (<span style="color: rgb(0, 0, 255);">const</span><span style="color: rgb(0, 0, 0);">  S32*)c_crParams.binSegNext;<br>
+    <span style="color: rgb(0, 0, 255);">const</span><span style="color: rgb(0, 0, 0);">  S32*              binSegCount     = (<span style="color: rgb(0, 0, 255);">const</span><span style="color: rgb(0, 0, 0);">  S32*)c_crParams.binSegCount;<br>
+ <br>
+    <span style="color: rgb(0, 128, 0);">//--bpe Output storage for building per-coarse-tile linked-lists of segments.  Each segment is:</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//				CR_TILE_SEG_SIZE	= 32	triangles big,</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//				CR_TILE_SEG_LOG2	= 5</span><span style="color: rgb(0, 0, 0);"> <br>
+     S32*                    tileFirstSeg    = (S32*)c_crParams.tileFirstSeg;<br>
+     S32*                    tileSegData     = (S32*)c_crParams.tileSegData;<br>
+     S32*                    tileSegNext     = (S32*)c_crParams.tileSegNext;<br>
+     S32*                    tileSegCount    = (S32*)c_crParams.tileSegCount;<br>
+ <br>
+</span></span></span></span></span></span></span></span></span></span></span></span></span></span></cpp></pre></div><br>
+<br>
+<h2>Prelude: sorting bins</h2><br>
+For efficiency, bins are processed in descending order of triangle count; the fullest bins are handled first.<br>
+<br>
+There are only a maximum of 16x16 bins.  However their triangles were processed by 16 SMs, so each bin comes with 16 "total" triangle counts, one per SM.  To figure out the number of triangles per bin, we must sum these 16 counts for a true total.  The first 16x16 threads in <i>every</i> kernel do this summing, all coming up with the same answer.  This is stored in a local array s_binOrder and sorted.  Now every persistent kernel can use atomicInc to grab a bin, and get started merging its 16 queues.  Please see the code for more detailed comments.<br>
+<br>
+<h2>Step One: Merging bin queues</h2><br>
+Once we have our bin index in binIdx, we want to fill s_triQueue with at least 512 triangles.  This queue can hold up to 1024 elements, so even if the next bin segment that we copy over is completely filled at 512 elements, it is guaranteed to fit entirely in the remaining queue space.  Thus we don't have to worry about partially processed bin queues:<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"><pre><cpp><br>
+     <span style="color: rgb(0, 128, 0);">//--bpe we have room for 1024 triangles.  If the number of triangles ready for consumption</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//      is &lt;= 512, we have at least room for 512 more.  So we know that even if the next</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//      segment we process is completely full, it will fit in the queue, and we never have</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//      to worry about partially consumed queues.  We merge the whole thing, or we leave</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//      it for next time.			</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//      Note that the read and write pos are never wrapped around; we have a circular queue,</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//      but the 'wrapping' is done with a 'modulo 1024'; when actually indexing into the queue.</span><span style="color: rgb(0, 0, 0);"> <br>
+ <br>
+</span></span></span></span></span></span></span></cpp></pre></div><br>
+<br>
+To figure out which of the bin's 16 queues should copy its segment into s_triQueue, it suffices to look at the first triangle of each queue.  The lowest index is the one whose segment is next if we wish to preserve input order.  Finding the minimum of 16 elements can be done in log(N) steps without synchronization:<br>
+<br>
+<img src="20121123-cudamin.png" alt="Intra-lane fast minimum." title="Intra-lane fast minimum." width="388" height="435"><br>
+<br>
+Once the correct queue is identified, there is some logic to walk the linked list that is similar in spirit to binRaster, so let's just skip ahead to what its outcome is:<br>
+<br>
+<ul><li><tt>s_binStreamSelectedSize</tt> = how many triangles to copy into the queue;</li><br>
+<li><tt>s_binStreamSelectedOfs</tt> = where to copy them from;</li><br>
+<li>&nbsp;</li><br>
+<li><tt>s_binStreamCurrSeg[warp]</tt>  = points to the _next_ segment that needs to be consumed;</li><br>
+<li><tt>s_binStreamFirstTri[warp]</tt> = value (not index) of first triangle of the _next_ segment to be consumed;</li><br>
+<li>&nbsp;</li><br>
+<li><tt>s_triQueueWritePos</tt> = position in the queue where the _next_ segment needs to be written to.  Thus the segment that we just decided on needs to be copied to:</li><br>
+<li><tt>queue[ s_triQueueWritePos - segSize ] ... queue[ s_triQueueWritePos-1 ], modulo 1024</tt></li></ul><br>
+<br>
+During the actual copy of triangles from the bin's selected segment to our triQueue, the bookkeeping appears to be in reverse: thread 511 copies triangle 0, 510 handles 1, and so on -- without reversing the triangle order itself, of course.  I'm not sure why this might be -- better write coalescing?  Perhaps I'm reading it wrong.<br>
+<br>
+<h2>Step Two: Bit rasterization</h2><br>
+The input s_triQueue contains at least 512 triangles (except if the input was exhausted).  So the kernel switches to one thread per triangle and rasterizes its coverage as bits into s_warpEmitMask.<br>
+<br>
+Most of this code is similar to binRaster, in fact it is slightly simpler because some special cases are gone; more on that in a moment.  Let's first take a closer look at the memory layout of the shared data.<br>
+<br>
+We're rasterizing up to 512 triangles into 16x16 coarse tiles.  So for each coarse tile, we need 512/32 = 16 words of 32 bits.  Yet, these are <i>not</i> stored contiguously; instead of a 16x16 array where each element is 16 32-bit words, we have 16 consecutive instances of a 16x16 array of a single u32.<br>
+<br>
+In essence, each 16x16 grid of coarse tiles can be thought of as a single slice in a 3D cube: the front face deals with triangles/bits 0..31; the next slice deals with triangles/bits 32..63, and so on up to the last slice, number 15, that deals with triangles/bits 480..511.  If you focus on the left cube in the image below, and ignore everything else for now, then this may help to visualize this (click to enlarge):<br>
+<br>
+<figure>
+	<a href="20121123-warpemitmask.png">
+		<img src="20121123-warpemitmask.png" width="100%" />
+	</a>
+	<figcaption>
+	warpEmitMask 3D bit cube.
+	</figcaption>
+</figure>
+<br>
+<br>
+For each slice S, the 32 bits at coordinate X, Y, tell us which triangles T, S * 32 &lt;= T &lt; (S+1) * 32, overlap coarse tile (X, Y).  It does, if bit 1 &lt;&lt; ( T % 32) is set.<br>
+<br>
+Since a single coarse tile is only 8x8 pixels, it is fairly unlikely that <i>all</i> 32 triangles in a batch/warp will fit inside just one coarse tile -- even if we allow that tile to be different for each triangle.  Even if all triangles in a batch are small, the chance of any of them crossing an 8x8 boundary are high; however, such tiny triangles <i>are</i> guaranteed to all fit in a 2x2 grid, so that is a special case worth handling:<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"><pre><cpp><br>
+     <span style="color: rgb(0, 128, 0);">//--bpe ...and the number of coarse tiles covered horizontally is hix-lox+1</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 0, 255);">int</span><span style="color: rgb(0, 0, 0);">  sizex = add_sub(hix, 1, lox);<br>
+     <span style="color: rgb(0, 0, 255);">int</span><span style="color: rgb(0, 0, 0);">  sizey = add_sub(hiy, 1, loy);<br>
+     U32 maskBit = 1 &lt;&lt; threadIdx.x;<br>
+ <br>
+     <span style="color: rgb(0, 128, 0);">// Case A: All AABBs are small =&gt; record the full AABB using atomics.</span><span style="color: rgb(0, 0, 0);"> <br>
+ <br>
+     <span style="color: rgb(0, 128, 0);">//--bpe Note: there's no special case for 1x1.  This would correspond with 32 consecutive triangles</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//      that _all_ fit exactly in just one 8x8 pixel coarse tile (although it could be a different tile).</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//      Too unlikely to happen?</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (__all(sizex &lt;= 2 &amp;&amp; sizey &lt;= 2))<br>
+     <span style="color: rgb(0, 0, 0);">{</span><br>
+         atomicOr((U32*)currPtr, maskBit);<br>
+         <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (sizex == 2) atomicOr((U32*)(currPtr + 4), maskBit);<br>
+         <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (sizey == 2) atomicOr((U32*)(currPtr + CR_BIN_SIZE * 4), maskBit);<br>
+         <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (sizex == 2 &amp;&amp; sizey == 2) atomicOr((U32*)(currPtr + 4 + CR_BIN_SIZE * 4), maskBit);<br>
+ <br>
+</span></span></span></span></span></span></span></span></span></span></span></cpp></pre></div><br>
+<br>
+For the general case where at least one triangle covers more than 2x2 tiles, the first thing we need is the AABB of the entire group. This clever algorithm takes care of that:<br>
+<br>
+<ul><li>per triangle, set all bits in a 16 bit word for every column of coarse tiles that overlaps the triangle AABB;</li><br>
+<li>do the same for every row of coarse tiles, in a different 16 bit word -- actually the upper 16 bits of the same u32;</li><br>
+<li>"or" all these together across all triangles;</li><br>
+<li>find the least and most significant bit set in both 16 bit words;</li><br>
+<li>the indices of those bits are the low x, high x, low y, high y coordinates of an AABB for all 32 triangles -- inclusive.</li></ul><br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"><pre><cpp><br>
+     <span style="color: rgb(0, 128, 0);">//--bpe    ( 2 &lt;&lt; H ) - ( 1 &lt;&lt; L ) sets all the bits whose position P is H &gt;= P &gt;= L.</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//       </span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//        Since both H and L are certainly &lt; 16 (the number of coarse tiles along X or Y</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//        per bin), we can compute the mask for both the horizontal lox..hix case (lowest</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//        16 bits) and loy..hiy (upper 16 bits of aabbMask) in one go:</span><span style="color: rgb(0, 0, 0);"> <br>
+     U32 aabbMask = add_sub(2 &lt;&lt; hix, 0x20000 &lt;&lt; hiy, 1 &lt;&lt; lox) - (0x10000 &lt;&lt; loy);<br>
+     <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (triIdx == -1)<br>
+         aabbMask = 0;<br>
+ <br>
+     <span style="color: rgb(0, 128, 0);">//--bpe  atomic-Or every lane's aabbMask together.  Ignoring other warps/batches, so no sync</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//       needed; similar to atomicMin earlier.  s_scanTemp is padded on the left with 16 zeroes.</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 0, 255);">volatile</span><span style="color: rgb(0, 0, 0);">  U32* p = &amp;s_scanTemp[threadIdx.y][threadIdx.x + 16];<br>
+     p[0] = aabbMask, aabbMask |= p[-1];<br>
+     p[0] = aabbMask, aabbMask |= p[-2];  etc...<br>
+ <br>
+ <br>
+     U32 maskX = aabbMask &amp; 0xFFFF;<br>
+     U32 maskY = aabbMask &gt;&gt; 16;<br>
+     <span style="color: rgb(0, 128, 0);">//--bpe Recover lox,loy,hix,hiy for the entire AABB covered by all triangles in this 32-tri-batch.</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//      findLeadingOne finds the most significant bit. To find the lowest one, clear all</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//      bits above it.  For b0..011111100..0, that's what x ^(x-1) does:</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//        b0001111100...0   x</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//        b0001111011...1   x-1</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//        b0000000111...1   x^ x-1</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 0, 255);">int</span><span style="color: rgb(0, 0, 0);">  wlox = findLeadingOne(maskX ^ (maskX - 1));<br>
+ <br>
+</span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></cpp></pre></div><br>
+<br>
+Once we know the size of the AABB covering all 32 triangles, another optimization can be made.  If this AABB is "not very big", then we know that all triangles are packed relatively tightly.  The bad news in that case is that atomicOr of all the bits would conflict, and be slow. But the good news is that there wouldn't be much waste in simply traversing the global AABB, and setting bits with a single (non atomic) op, just testing against each triangle, works great.<br>
+<br>
+The AABB is considered "too big" if there's not a single triangle whose AABB covers at least half of the global AABB:<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"><pre><cpp><br>
+     <span style="color: rgb(0, 128, 0);">// Case B: Warp-AABB is not much larger than largest AABB =&gt; Check tiles in warp-AABB, record using ballots.</span><span style="color: rgb(0, 0, 0);"> <br>
+ <br>
+     <span style="color: rgb(0, 128, 0);">//--bpe the only way this can fail is if every triangle covers at most warea / 2 coarse tiles, ie. covering </span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//      less than half the full-warp-AABB area.  If that happens, there's too much empty space in between</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//      so jump to case C.  If it works, just rasterize the warp AABB:</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (__any(warea * 4 &lt;= area * 8))<br>
+     <span style="color: rgb(0, 0, 0);">{</span><br>
+         <span style="color: rgb(0, 0, 255);">for</span><span style="color: rgb(0, 0, 0);">  (<span style="color: rgb(0, 0, 255);">int</span><span style="color: rgb(0, 0, 0);">  y = wloy; y &lt;= hiy; y++)<br>
+         <span style="color: rgb(0, 0, 0);">{</span><br>
+             <span style="color: rgb(0, 128, 0);">//--bpe make sure we don't update the edge distance induction variables unless we're really</span><span style="color: rgb(0, 0, 0);"> <br>
+             <span style="color: rgb(0, 128, 0);">//      inside the triangle AABB.</span><span style="color: rgb(0, 0, 0);"> <br>
+             <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (y &lt; loy) <span style="color: rgb(0, 0, 255);">continue</span><span style="color: rgb(0, 0, 0);"> ;<br>
+             <span style="color: rgb(0, 0, 255);">for</span><span style="color: rgb(0, 0, 0);">  (<span style="color: rgb(0, 0, 255);">int</span><span style="color: rgb(0, 0, 0);">  x = wlox; x &lt;= hix; x++)<br>
+             <span style="color: rgb(0, 0, 0);">{</span><br>
+                 <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (x &lt; lox) <span style="color: rgb(0, 0, 255);">continue</span><span style="color: rgb(0, 0, 0);"> ;<br>
+                 <span style="color: rgb(0, 128, 0);">//--bpe use a single write to set all bits of every triangle in the warp whose edge</span><span style="color: rgb(0, 0, 0);"> <br>
+                 <span style="color: rgb(0, 128, 0);">//      functions are all positive -- that is, coarse tile overlaps the triangle.</span><span style="color: rgb(0, 0, 0);"> <br>
+                 <span style="color: rgb(0, 128, 0);">//      Conflicting writes, but they all write the same value.</span><span style="color: rgb(0, 0, 0);"> <br>
+                 *(U32*)currPtr = __ballot(b01 &gt;= 0 &amp;&amp; b02 &gt;= 0 &amp;&amp; b12 &gt;= 0);<br>
+ <br>
+</span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></cpp></pre></div><br>
+<br>
+<h2>Step Three: Prefix sum</h2><br>
+Rasterization is done, and it's time to start counting bits.  As with binRaster, we need to know how many triangles overlap each coarse raster, so we can check if there's enough space to write them out, and allocate segments if necessary.  Unlike binRaster, we also need most of the intermediate counts and prefix sums for Step Four.<br>
+<br>
+Going back to the illustration above with the giant arrow in it, you can see the prefix sum we're after. For each coarse tile, we want to know the total number of triangles emitted, <tt>tileEmits</tt>, as well as the intermediate sums.  When we are done, we will know...<br>
+<br>
+<ul><li>tileEmits = grand total per coarse tile;</li><br>
+<li>s_warpEmitMask = if [W][J*16+I] &amp; (1 &lt;&lt; T) then triangle W*32+T overlaps coarse tile (I,J);</li><br>
+<li>s_warpEmitPrefixSum = inclusive prefix sum of #bits set per coarse tile, summed over groups of 32 triangles.  That is, </li><br>
+<li>s_warpEmitPrefixSum[W][J*16+I] = number of triangles overlapping coarse tile(I,J) that are part of any 32-triangle-batch WW &lt;= W.</li><br>
+<li>s_tileStreamCurrOfs = where we're currently writing for this coarse tile;</li><br>
+<li>s_tileEmitPrefixSum = prefix sum of ( # of triangles per coarse tile &lt;&lt; 13 ) | ( # of new segments )</li></ul><br>
+<br>
+tileEmits and warpEmitPrefixSum is easy enough -- with one thread per coarse tile, sum the <tt>__popc</tt> of the bits at that position in warpEmitMask, traversing the 16 slices front to back.<br>
+<br>
+s_tileEmitPrefixSum is a little tricker; we have 16x16 = 256 counts to prefix sum, which is too many for a single warp to handle without synchronization.  The solution is to sum on two levels:<br>
+<br>
+<ul><li>use 8 threads T to compute an exclusive prefix sum of elements T * 32 ... ( T + 1 ) * 32;</li><br>
+<li>the result is a prefix sum in s_tileEmitPrefixSum -- but one that "resets" every 32 elements, see green column in the image below;</li><br>
+<li>take the 8 sub-totals, copy to s_scanTmp, and prefix sum those;</li><br>
+<li>go back to s_tileEmitPrefixSum and patch up the values.</li></ul><br>
+<br>
+<img src="20121123-tileemits.png" alt="Tile emitter prefix sums." title="Tile emitter prefix sums." width="713" height="537"><br>
+<br>
+This is quite similar to how a prefix sum works when a dataset doesn't fit in shared memory (<a href="http://developer.download.nvidia.com/compute/cuda/1.1-Beta/x86_website/projects/scan/doc/scan.pdf">example</a>).<br>
+<br>
+Every coarse tile that is about to overflow its segment needs one or more new segments.  A single thread is in charge of allocating enough segments for <i>all</i> overflowing tiles with a single atomicAdd.  How does that one thread know how many segments are needed?  The trick is that all the numbers we've been prefix-summing into s_tileEmitPrefixSum are in fact a packed encoding of two numbers, the number of triangles emitted as well as the number of segments that must be allocated:<br>
+<br>
+<ul><li>s_tileEmitPrefixSum = prefix sum of ( # of triangles per coarse tile &lt;&lt; 13 ) | ( # of new segments )</li></ul><br>
+<br>
+Why shift left 13?  We have 512 triangles in the input.  Each coarse tile output segment can store 32 triangles.  The worst case is that all triangles are enormous and cover <i>every</i> coarse tile, and that <i>every</i> coarse tile has a full segment (or no segment at all).  In that case, each coarse tile will try to allocate 512/32 = 16 segments, which when summed over 16x16 coarse tiles is 2^12.  We need 13 bits to stay clear, the value of emitShift.<br>
+<br>
+Note that at this point, we've allocated the segments, but haven't fixed up the linked lists yet.<br>
+<br>
+<h2>Step Four: Writing out the data</h2><br>
+At long last, the <i>piece de resistance</i>: writing the triangles to every coarse tile's segments.  There are several ways to do this: one thread could handle one triangle, looping over all coarse tiles it touches.  Or one thread could handle one tile, looping over its triangles.  Both suffer from uneven load balancing, incoherent memory access, and for the per-tile case, too many threads for the work available.<br>
+<br>
+Instead the authors pick an interesting approach: use one thread <i>per bit</i>.  We know that the total number of bits set is totalEmits.  The kernel as a whole can look at 512 bits at the same time (looping as needed), each bit/thread representing one triangle hitting one coarse tile.  The thread needs to figure out which triangle that is, and which coarse tile that is. In other words, it needs to go and find the location of the Nth bit in the s_warpEmitMask cube: find the coarse tile I,J, find the slice S, and within the u32, find the bit B.<br>
+<br>
+Fortunately the previous steps have given us various prefix sums that can be recycled to do a fast binary search.  s_tileEmitPrefixSum holds the number of tiles touching each coarse tile.  A binary search through these 256 values tells us which "tunnel" to focus on in the volume.<br>
+<br>
+For any given coarse tile T, s_warpEmitPrefixSum[*][T] is a prefix sum of the bitcounts; after adjusting the index N of the bit that we're looking for so it's relative to the given tile, a binary search will tell us which slice S holds the N'th bit.<br>
+<br>
+After adjusting the index again so it's relative to the given warpEmitMask, we simply need to find the N'th bit.<br>
+<br>
+The binary search isn't very difficult; the challenge here is not getting confused by all the data.  I've tried to illustrate the search below; the orange arrows illustrate the jumps taken during the binary search (click to enlarge):<br>
+<br>
+<figure>
+	<a href="20121123-binarysearch.png">
+		<img src="20121123-binarysearch.png" width="100%" />
+	</a>
+	<figcaption>
+	Using binary search to find that bit.
+	</figcaption>
+</figure>
+<br>
+<br>
+An example of the first step, converted back into pseudocode:<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"><pre><cpp><br>
+    <span style="color: rgb(0, 128, 0);">//--bpe We know the prefix sum of number of triangles emitted by each coarse tile.</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//      So we can do a binary search to find the one coarse tile whose emit offset</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//      (= exclusive prefix summed counts) is &lt; emitInBin, and the next one is &gt;=.</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//      delta = 16x16/2 = 128</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//      seek = 0</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//      repeat 8 times:</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//         if emitInBin &gt;= tileEmitPrefixSum[ seek + delta ]</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//             then seek += delta</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//         delta /= 2</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//      emitInTile = seek<br>
+ <br>
+</span></span></span></span></span></span></span></span></span></span></span></span></cpp></pre></div><br>
+<br>
+The binary search for the N'th bit in an u32 <tt>emitMask</tt> can again take advantage of the built-in very fast bitcounter __popc.<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"><pre><cpp><br>
+    <span style="color: rgb(0, 128, 0);">//--bpe </span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//    Binary search for the lane that has bit number #emitInWarp set. The least significant bit is "thread/lane zero".</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//    Start by looking at 16 bits, then look at 8, 4, 2 and finally 1.  That is, start with 32 bits and see if we need</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//    to focus on the left or the right half. It's the left half if the number of bits set in the right half is less</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//    than the emitInWarp number we're after.  If we do decide to take the left half, then...</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//    - shift the bits to the right, so we can keep talking about "left" and "right" halves that extend from bit 0...2^N;</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//    - subtract however many bits were set in the right half, from emitInWarp, since that's how many we just skipped;</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">//    - increase threadInWarp by however many bit were in the right half, set or not, since threadInWarp is the "cursor".</span><span style="color: rgb(0, 0, 0);"> <br>
+ <br>
+    <span style="color: rgb(0, 128, 0);">//--bpe left/right decision for 16 bits.</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 0, 255);">int</span><span style="color: rgb(0, 0, 0);">  threadInWarp = 0;<br>
+    <span style="color: rgb(0, 0, 255);">int</span><span style="color: rgb(0, 0, 0);">  pop = __popc(emitMask &amp; 0xFFFF);<br>
+    <span style="color: rgb(0, 0, 255);">bool</span><span style="color: rgb(0, 0, 0);">  pred = (emitInWarp &gt;= pop);<br>
+    <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (pred) emitInWarp -= pop;<br>
+    <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (pred) emitMask &gt;&gt;= 0x10;<br>
+    <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (pred) threadInWarp += 0x10;<br>
+ <br>
+</span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></cpp></pre></div><br>
+<br>
+Finally, once the bit is found, the index of the source triangle in the s_triQueue is easy to figure out, so we go pick up the actual triangle index value, and write it to an output segment.  Because all newly allocated segments are contiguous, there's no need to chase linked list pointers yet; s_tileAllocPrefixSum tells us where the allocated segments for an overflowing coarse tile begin:<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"><pre><cpp><br>
+     <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (outOfs &lt; spaceLeft)<br>
+         outOfs += currOfs;<br>
+     <span style="color: rgb(0, 0, 255);">else</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 0, 0);">{</span><br>
+         <span style="color: rgb(0, 128, 0);">//--bpe enough segments have been allocated for all coarse tiles. Look at</span><span style="color: rgb(0, 0, 0);"> <br>
+         <span style="color: rgb(0, 128, 0);">//      exclusive prefix sum s_tileAllocPrefixSum to figure out where our</span><span style="color: rgb(0, 0, 0);"> <br>
+         <span style="color: rgb(0, 128, 0);">//      run of brand new segments begins.</span><span style="color: rgb(0, 0, 0);"> <br>
+         <span style="color: rgb(0, 0, 255);">int</span><span style="color: rgb(0, 0, 0);">  allocLo = firstAllocSeg + s_tileAllocPrefixSum[tileInBin];<br>
+         outOfs += (allocLo &lt;&lt; CR_TILE_SEG_LOG2) - spaceLeft;<br>
+     <span style="color: rgb(0, 0, 0);">}</span><br>
+ <br>
+</span></span></span></span></span></span></cpp></pre></div><br>
+<br>
+<h2>Step Five: Wrapping Up</h2><br>
+At this point, all triangle indices were written out; any newly allocated segments were already (partially) filled.  However the tileSegNext pointers for the coarse tiles aren't up to date yet.<br>
+<br>
+Since all new segments that belong to the same coarse tile (if it allocated two or more) are contiguous, a first lazy approximation is to assume that the next pointer for <i>all</i> newly allocated segments is just "myIndex+1", so that's what the code starts with, using one thread per newly allocated segment.<br>
+<br>
+Of course, the next pointer of the segment that used to be last -- the one that overflowed -- also needs to be patched up to point to the first newly allocated segment.  If there was no segment yet, we set up the head pointer in tileFirstSeg instead.  Finally we make sure that the write pointer for each coarse tile, s_tileStreamCurrOfs, is advanced; and moved to the last newly allocate segment if any.<br>
+<br>
+We're now ready to go back to Step One: try to merge more triangles from whichever bin segment is next into s_triQueue.  This goes on until the bin is empty.<br>
+<br>
+When that happens, we grab a new bin and everything starts all over.  Unlike BinRaster, there's no risk of "dangling" queues that need to be flushed; all triangles have been written.  Nevertheless some bookkeeping is still needed before we jump to the next bin.<br>
+<br>
+First, of any newly allocated segments, the last one (per coarse tile) still has its next pointer incorrectly pointing to myIndex+1.  So we need to fix that and make it a sentinel.<br>
+<br>
+Second, we want a list of all coarse tiles that received any triangles, so we can skip the ones that didn't in fineRaster.  If deferredClear is enabled, that will be all of them.  The destination is the activeTiles buffer.  As always, writing out the indices requires an offset, which requires a prefix sum of the 16x16 activity bits, one per coarse tile.  Once more we can use popc(ballot) to instantly get 8 sums of 32 bits, and prefix sum those 8 numbers to get global write positions.<br>
+<br>
+And that's that!  Phew.
+</div>
+
+<div class="iteminfo">
+  posted at 05:19:45 PM on 11/23/2012
+  by <a href="default_052.html" indepth="true">peirz</a> -
+  Category: <a href="default_053.html" indepth="true">zwans</a> -
+  Tag: <a href="default_049.html" indepth="true">programming</a> / <a href="default_060.html" indepth="true">graphics</a> / <a href="default_002.html" indepth="true">rendering</a> / <a href="default_063.html" indepth="true">deferred</a> / <a href="default_061.html" indepth="true">cudaraster</a>
+  
+</div>
+
+</div><!-- end of the contents div -->
+
+<!-- definition of the logo (left-top) -->
+<div class="logo">
+ <a href="index.html" indepth="true"><img src="beer.jpg" alt="" width="150" height="94"></a>
+ <br><center><font size="-2">pookie sayz: "feh"</font></center>
+</div>
+<!-- definition of the menu -->
+<div class="menu">
+
+</div>
+
+</body></html>

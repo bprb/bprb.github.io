@@ -1,0 +1,41 @@
+/* ::::: http://bpeers.com/blog/skins/grey/grey.css ::::: */
+
+body { font-family: verdana,arial,sans-serif; font-size: small; background-color: whitesmoke; color: rgb(0, 0, 0); line-height: 140%; }
+.contents { position: absolute; left: 210px; width: 750px; }
+.logo { position: absolute; top: 20px; left: 20px; }
+.menu { position: absolute; top: 145px; left: 20px; width: 110px; color: rgb(119, 119, 119); font-size: small; }
+h1 { text-align: center; }
+.menu h2 { font-size: small; background-color: rgb(255, 255, 255); width: 150px; }
+.contents h2 { background-color: rgb(255, 255, 255); border: 1px solid rgb(204, 204, 204); padding: 5px; font-size: large; margin-bottom: 5px; }
+.contents .item .date { background-color: rgb(255, 255, 255); font-size: x-small; text-align: right; display: inline; float: right; margin-top: 16px; }
+h3.item { font-size: medium; margin: 10px 0px 0px; }
+.contents h3.item { background-color: rgb(255, 255, 255); border: 1px solid rgb(204, 204, 204); padding: 5px; font-size: large; margin-bottom: 5px; }
+.itembody { margin-top: 5px; margin-bottom: 5px; }
+.iteminfo { font-size: x-small; color: gray; }
+.iteminfo a { font-weight: bolder; color: rgb(85, 85, 85); text-decoration: none; }
+img { border: medium none; }
+.skip { display: none; }
+ul.nobullets { list-style: outside none none; margin-left: 0px; padding-left: 0px; }
+.calendar { font-size: x-small; background-color: rgb(255, 255, 255); width: 150px; }
+.calendar caption { background-color: rgb(255, 255, 255); }
+.weerbericht { font-size: x-small; background-color: rgb(255, 255, 255); width: 150px; }
+.weerberichtc { font-size: x-small; background-color: rgb(255, 255, 255); width: 150px; text-align: center; }
+.weerbericht a { color: rgb(51, 102, 204); }
+.weerbericht a:visited { color: rgb(24, 48, 128); }
+.weerbericht a:active { color: rgb(68, 136, 255); }
+.searchform input { width: 145px; }
+.zoeken { font-size: x-small; background-color: rgb(255, 255, 255); width: 150px; }
+.menu a { color: rgb(51, 102, 204); }
+.menu a:visited { color: rgb(24, 48, 128); }
+.menu a:active { color: rgb(68, 136, 255); }
+.menu a:hover { text-decoration: underline; }
+.itembody a { color: rgb(51, 102, 204); }
+.itembody a:visited { color: rgb(24, 48, 128); }
+.itembody a:active { color: rgb(68, 136, 255); }
+.itembody a:hover { text-decoration: underline; }
+.formfield { width: 547px; }
+pre { font-family: monospace; color: rgb(0, 0, 0); background-color: rgb(255, 255, 255); margin-top: 4px; margin-bottom: 4px; padding: 4px; line-height: 70%; width: 800px; }
+cpp { font-family: monospace; color: rgb(0, 0, 0); background-color: rgb(255, 255, 255); }
+/* ::::: http://bpeers.com/blog/nucleus/plugins/lightbox2/css/lightbox.css ::::: */
+
+.clearfix::after { content: "."; display: block; height: 0px; clear: both; visibility: hidden; }

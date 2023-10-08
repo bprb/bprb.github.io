@@ -1,0 +1,449 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html>
+<head>
+<meta content="text/html; charset=UTF-8" http-equiv="Content-Type">
+
+  <title>Annotating CudaRaster - w00t </title>
+
+  <!-- some meta information (search engines might read this) -->
+  <meta name="title" content="Annotating CudaRaster">
+  <meta name="generator" content="Nucleus CMS v3.64">
+  <meta name="description" content="Annotating CudaRaster">
+
+  <!-- stylesheet definition (points to the place where colors -->
+  <!-- and layout is defined -->
+  
+
+  <!-- prevent caching (can be removed) -->
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Cache-Control" content="no-cache, must-revalidate">
+  <meta http-equiv="Expires" content="-1">
+  
+  <!-- extra navigational links -->
+  <link rel="bookmark" title="Nucleus" href="http://nucleuscms.org/">
+  <link rel="alternate" type="application/rss+xml" title="RSS" href="http://bpeers.com/blog/xml-rss2.php">
+  <link rel="archives" title="Archives" href="http://bpeers.com/blog/?archivelist=1">
+  <link rel="top" title="Today" href="http://bpeers.com/blog/">
+  <link rel="next" href="http://bpeers.com/blog/?itemid=1165" title="Next Item">
+  <link rel="prev" href="http://bpeers.com/blog/?itemid=1160" title="Previous Item">
+  <link rel="up" href="http://bpeers.com/blog/?blogid=1" title="Today">
+
+
+<link media="all" href="/cudaraster/default_064.css" type="text/css" rel="stylesheet">
+</head>
+<body>
+
+
+
+
+<!-- here starts the code that will be displayed in your browser -->
+<div class="contents">
+
+ <!-- page title -->
+ <h1>w00t</h1>
+
+ <!-- this is a normally hidden link, included for accessibility reasons -->
+ <a href="#navigation" class="skip">Jump to navigation</a>
+
+ <!-- inserts the selected item using the template named 'grey/full'     -->
+ 
+<h3 class="item"><div class="date">14/11/12</div>
+<img src="pc.png" valign="bottom" border="0" align="bottom"> Annotating CudaRaster</h3>
+
+<div class="itembody">
+  In the <a href="http://code.google.com/p/cudaraster/">CudaRaster project</a>, Samuli Laine and Tero Karras have implemented a complete triangle rasterizer in Cuda.  They explain how it works, and why, in their excellent <a href="http://research.nvidia.com/sites/default/files/publications/laine2011hpg_paper.pdf">High-Performance Software Rasterization on GPUs</a> paper.  What's more, they've open sourced the implementation, which is fantastic.  The code is full of little and big gems, highly efficient ways and tricks to keep those cores busy.  It took me a while to wrap my head around it, so in this post I want to share my attempt at demystifying the bin rasterizer phase a little, just to start somewhere.<br>
+<br>
+
+  <br><br>
+  <ul><li>The coarseRaster stage is analyzed <a href="part2.html" indepth="true">here</a>.</li><br>
+<li><a href="part3.html" indepth="true">Triangle Setup</a> is now also covered.</li></ul><br>
+<br>
+I've also uploaded a <a href="http://bpeers.com/dump/BinRaster.inl">"personal copy" of binRaster.inl</a>; it is taken from version 1.1 but with some extra comments that I added as I worked my way through it.  So just to be very clear, I've <i>only</i> added some comments which may or may not be true, helpful or interesting. Otherwise I've made no changes, and the file is most definitely still entirely...<br>
+<pre><font color="darkgreen"> *  Copyright (c) 2009-2011, NVIDIA Corporation<br>
+ *  All rights reserved. [...]<br>
+ *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"</font></pre><br>
+Hopefully it helps understanding the code -- but to use this in your project, just go to the source. Comments that I've added are tagged with "--bpe".  There are a few minor commented bits that I'm not repeating in this post.<br>
+<br>
+<h2>Overview</h2><br>
+Digging through the code (and this post) probably makes more sense if you've read the paper.  I want to focus on the smarts that are in the actual implementation.<br>
+<br>
+There are five big steps in the bin rasterization process:<br>
+<ul><br>
+<li>Grab triangles from the input queue until we have at least 512 of them, enough to give each thread one triangle to process in the subsequent steps;</li><br>
+<li>Set the bits that indicate which triangle overlaps which bin (one bin is a 128x128 pixels tile);</li><br>
+<li>Figure out how many bits are set per bin, so we know how many triangles we'll want to write out per bin; count how many bins don't have enough room to actually write out that many triangles;</li><br>
+<li>For each overflowing bin, allocate a new segment;</li><br>
+<li>Finally write the triangles to the current segment, switching to the newly allocated segment once it's full.</li></ul><br>
+This whole process repeats until we're out of triangles.<br>
+<br>
+Before digging into bit twiddling and prefix summing, it's important to understand the overall data layout.<br>
+<br>
+There is one giant array that stores all triangle IDs that passed the bin rasterizer, classified per bin that they appear in. Since triangles may overlap multiple bins, triangle IDs can appear multiple times in this array.  It is called appropriately enough <tt>binSegData</tt>.<br>
+<br>
+Logically it is chopped up in chunks or segments of 512 indices.  When a tile has some output for the first time, it grabs a segment, and writes the index of the segment into <tt>binFirstSeg</tt>.<br>
+<br>
+When the segment is full, a new one is allocated (using atomicInc) and its index is in turn recorded in <tt>binNextSeg</tt>, at the position of the segment that we just filled up.  Hence, you get a classic linked list, except that the next pointer is stored separately, instead of as part of the segment.<br>
+<br>
+<tt>binFirstSeg</tt> and <tt>binNextSeg</tt> record <i>segment indices</i>.  So to convert this to an offset into <tt>binSegData</tt> that you can start writing triangles at, you need to multiply with the segment size (512).<br>
+<br>
+Hopefully this picture is a helpful visual summary of this setup.<br>
+<br>
+<center>
+	<a href="20121114-binraster.png">
+		<img src="20121114-binraster.png" width="100%" />
+	</a>
+</center><br>
+<center><b>CORRECTION</b> there are a maximum of 16x16 bins, so there are 256 rows in binFirstSeg, not 128.</center><br>
+<br>
+Or as my annotations try to clarify:<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"> <pre><cpp><br>
+     <span style="color: rgb(0, 128, 0);">//--bpe indices of the segment to use to store triangles for a given bin b as processed by a given SM s:</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">// binFirstSeg[b][s].  Note these are segment indices, so they need to be multiplied by segment size (512)</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">// to index into binSegData.</span><span style="color: rgb(0, 0, 0);"> <br>
+     S32*                    binFirstSeg     = (S32*)c_crParams.binFirstSeg;<br>
+     S32*                    binTotal        = (S32*)c_crParams.binTotal;    <br>
+     S32*                    binSegData      = (S32*)c_crParams.binSegData;<br>
+     <span style="color: rgb(0, 128, 0);">//--bpe points to the index of the next segment;</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//    mySegment = binFirstSeg[tile*16+sm]        // start</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//    mySegment = binSegNext[mySegment]            // jump</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//    writePos  = mySegment * CR_BIN_SEG_SIZE</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//    binSegData[writePos] = triangleIndex</span><span style="color: rgb(0, 0, 0);"> <br>
+     S32*                    binSegNext      = (S32*)c_crParams.binSegNext;<br>
+     <span style="color: rgb(0, 128, 0);">//--bpe number of triangles stored in a segment.  Should be segment size (512), except</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 128, 0);">//    for the last segment in a batch.</span><span style="color: rgb(0, 0, 0);"> <br>
+     S32*                    binSegCount     = (S32*)c_crParams.binSegCount;<br>
+</span></span></span></span></span></span></span></span></span></span></cpp></pre><br>
+</div><br>
+<br>
+<br>
+<br>
+<h2>Step One: Intra-warp data packing</h2><br>
+The first interesting problem, and clever solution, immediately appears in step 1 -- grabbing 512 triangles from the SM's big batch.  The difficulty is that the number of input triangles per thread is variable: it can be zero when we've exhausted the input with this thread; and it can be more than one, if the source triangles got clipped into several subtriangles by the previous phase (triangle setup).<br>
+<br>
+This is a specific instance of a general problem of packing work across warps: you want to gather up work items until you have enough of them, and then switch mode to crunching through the whole batch.  Then you switch back and get some more work, repeat.<br>
+<br>
+This same pattern appears for example in deferred shading using compute shaders.  First we want to discover all the lights that overlap our tile, and keep doing that until we have a large number of them (or we run out of lights).  Only then do we switch to "per pixel" mode where now each thread is in charge of one pixel, crunching through all the relevant lights as found in phase one.<br>
+<br>
+A naive approach is to simply have room for N items (triangles, lights) in shared memory and use an atomic increment: when a thread wants to add one or more items to the batch, it increments a shared offset, and if the items still fit in the shared buffer, it adds them.  Otherwise, it stops and waits for everybody else to do the same, switching to "processing mode".  For example:<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"> <pre><cpp><br>
+ groupshared uint visibleLightCount;<br>
+ groupshared uint visibleLightIndex[ MAX_LIGHT_PER_TILE ];<br>
+ <br>
+ <span style="color: rgb(0, 0, 255);">for</span><span style="color: rgb(0, 0, 0);">  <span style="color: rgb(0, 0, 255);">each</span><span style="color: rgb(0, 0, 0);">  light<br>
+ <span style="color: rgb(0, 0, 0);">{</span><br>
+     <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);"> ( light in frustum )<br>
+     <span style="color: rgb(0, 0, 0);">{</span><br>
+         uint newIndex = 0;<br>
+         InterlockedAdd( visibleLightCount, 1, newIndex );<br>
+         <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);"> ( newIndex &gt;= MAX_LIGHT_PER_TILE )<br>
+         <span style="color: rgb(0, 0, 0);">{</span><br>
+             <span style="color: rgb(0, 0, 255);">break</span><span style="color: rgb(0, 0, 0);"> ;<br>
+         <span style="color: rgb(0, 0, 0);">}</span><br>
+         visibleLightIndex[ newIndex ] = light;<br>
+     <span style="color: rgb(0, 0, 0);">}</span><br>
+ <span style="color: rgb(0, 0, 0);">}</span><br>
+ <span style="color: rgb(0, 128, 0);">// switch to per-pixel here, testing every light</span><span style="color: rgb(0, 0, 0);"> <br>
+ <span style="color: rgb(0, 128, 0);">// in visibleLightIndex[ 0 ... visibleLightCount-1 ]</span><span style="color: rgb(0, 0, 0);"> <br>
+</span></span></span></span></span></span></span></cpp><br>
+</pre></div><br>
+<br>
+The big problem with this approach, besides inefficiency, are the random lights that get dropped if the buffer is full. If there are multiple warps in a block, then there's no guaranteed order in which the warps execute.  Likewise, within a warp, there is no guaranteed order in which the InterlockedAdds will execute.  So, when we get near the limit, it is essentially random which threads manage to still squeeze a light in, and which ones abandon their input.<br>
+<br>
+A more effective approach is shown in BinRaster: count how many triangles we need for <i>the entire block</i> and reserve enough space for that in one swoop.  This total can be computed with a prefix sum across the entire block.  If everything fits, then great, all threads can write their output.  If not, then there will be exactly one thread that crosses (or starts right after) the boundary.  That thread can then figure out how many items will fit, and adjust offsets and counters as needed.<br>
+<br>
+<h3>Cuda-style prefix sum</h3><br>
+For efficiency, the prefix sum for a block is computed in two steps: first a prefix sum within a warp, followed by summing all the sums across all warps in a block.<br>
+<br>
+Within a warp, a prefix sum of a yes/no, 1/0 value can be computed with this bit of Cuda magic:<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"> <pre><cpp><br>
+    <span style="color: rgb(0, 128, 0);">// cumulative sum of subtriangles within each warp</span><span style="color: rgb(0, 0, 0);"> <br>
+    U32 myIdx = __popc(__ballot(myBit) &amp; getLaneMaskLt());<br>
+</span></cpp></pre><br>
+</div><br>
+<br>
+<tt>__ballot</tt> is an intrinsic function that returns a 32-bit value where bit N will be true if 'myBit' was true for thread N, 0 &lt;= N &lt; warpSize (=32).<br>
+<br>
+<tt>getLaneMaskLt</tt> is a semi-intrinsic that has all bits set whose index is less than our per-warp thread index (that is, our lane).<br>
+<br>
+It follows that <tt>__ballot(myBit) &amp; getLaneMaskLt()</tt> has bit N set if 'myBit' was true for thread N <i>and</i> N is strictly less than our own lane index.<br>
+<br>
+Finally <tt>__popc</tt> is an intrinsic that instantly counts the number of bits set in a 32 bit word.<br>
+<br>
+Thus, <tt>__popc(__ballot(myBit) &amp; getLaneMaskLt())</tt> tells us <i>how many</i> 'myBits' were set in threads with an index lower than ours.  That, indeed, is exactly an exclusive prefix sum of 'myBits' across an entire warp.<br>
+<br>
+If a single bit is not enough, then this process can be repeated for each power of two that the value we wish to sum might be made up of.  In BinRaster, we have up to seven triangles per input element, so the full prefix sum is:<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"> <pre><cpp><br>
+    <span style="color: rgb(0, 128, 0);">//--bpe figure out the total number of triangles for this warp.</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// if we're not out of triangles, this should be at least 32 (= num threads per warp),</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// but can be more if clipping generated subtriangles.</span><span style="color: rgb(0, 0, 0);"> <br>
+<br>
+    <span style="color: rgb(0, 128, 0);">// cumulative sum of subtriangles within each warp</span><span style="color: rgb(0, 0, 0);"> <br>
+    U32 myIdx = __popc(__ballot(num &amp; 1) &amp; getLaneMaskLt());<br>
+    <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (__any(num &gt; 1))<br>
+    <span style="color: rgb(0, 0, 0);">{</span><br>
+        myIdx += __popc(__ballot(num &amp; 2) &amp; getLaneMaskLt()) * 2;<br>
+        myIdx += __popc(__ballot(num &amp; 4) &amp; getLaneMaskLt()) * 4;<br>
+    <span style="color: rgb(0, 0, 0);">}</span><br>
+</span></span></span></span></span></cpp></pre><br>
+</div><br>
+<br>
+To finally sum this up for the entire block, we save the sum to local shared memory, and have the first 16 threads add it all up.  No synchronization is needed because we have fewer than 32 threads at work, and they're all packed in a single warp (<tt>if (thrInBlock &lt; CR_BIN_WARPS)</tt>).  No boundary checks are needed, because all elements are offset by 16, and the first 16 elements in shared memory are guaranteed zero.  It comes down to:<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"> <pre><cpp><br>
+     <span style="color: rgb(0, 128, 0);">// first 16 elements of s_broadcast are always zero</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (thrInBlock &lt; 16)<br>
+         s_broadcast[thrInBlock] = 0;<br>
+ <br>
+     <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (thrInBlock &lt; CR_BIN_WARPS)<br>
+     <span style="color: rgb(0, 0, 0);">{</span><br>
+         <span style="color: rgb(0, 0, 255);">volatile</span><span style="color: rgb(0, 0, 0);">  U32* ptr = &amp;s_broadcast[thrInBlock + 16];<br>
+         U32 val = *ptr;<br>
+         val += ptr[-1]; *ptr = val;<br>
+         val += ptr[-2]; *ptr = val;<br>
+         val += ptr[-4]; *ptr = val;<br>
+         val += ptr[-8]; *ptr = val;                    <br>
+ <br>
+         <span style="color: rgb(0, 128, 0);">// initially assume that we consume everything</span><span style="color: rgb(0, 0, 0);"> <br>
+         s_batchPos = batchPos + CR_BIN_WARPS * 32;<br>
+         s_bufCount = bufCount + val;<br>
+     <span style="color: rgb(0, 0, 0);">}</span><br>
+     __syncthreads();<br>
+</span></span></span></span></span></cpp></pre><br>
+</div><br>
+<br>
+<h2>Step Two: Rasterizing those bits</h2><br>
+It's now time to look at those packed triangles, one per thread, and do a low res rasterization: set a bit for each 128x128 bin/tile that a triangle overlaps.<br>
+<br>
+These bits are stored in s_outMask: for each one of up to 16x16 bins, there is a single bit that will be set if the corresponding triangle touches the bin.  Since we just tried to pack 512 triangles in Step One, we need 512 bits.  A complicating twist is their storage: there are 16 32-bit words -- but they're not consecutive.  Rather, we have a group of 16x16 32-bit words <i>per warp</i>:<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"> <pre><cpp><br>
+    <span style="color: rgb(0, 128, 0);">//--bpe s_outMask[w][t] has bit N set if triangle w x 32 + N overlaps tile number t.  t &lt; 16*16.</span><span style="color: rgb(0, 0, 0);"> <br>
+    __shared__ <span style="color: rgb(0, 0, 255);">volatile</span><span style="color: rgb(0, 0, 0);">  S32 s_outMask   [CR_BIN_WARPS][CR_MAXBINS_SQR + 1]; <span style="color: rgb(0, 128, 0);">// +1 to avoid bank collisions<br>
+ <br>
+    <span style="color: rgb(0, 128, 0);">//--bpe Step 2: grabbing triangles is done, if input was not exhausted then we now have</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// bin_warps * 32 triangles. True count is in bufCount.  Set the bits in s_outMask.</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// Each thread grabs one triangle, but only sets the bits in the overlapping tiles t for</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// s_outMask[ myWarp ][t].  (myWarp == threadIdx.y).</span><span style="color: rgb(0, 0, 0);"> <br>
+</span></span></span></span></span></span></span></cpp></pre><br>
+</div><br>
+<br>
+In the general case the code traverses every pixel in the AABB and uses atomicOr to set all bits inside the triangle. With 128x128 tiles though it's very likely, with reasonable triangles, that most triangles will fit in an entire bin, or at most will touch 1x2, 2x1 or 2x2 tiles, as explained in the paper.  The 1x1 case can be optimized as follows.<br>
+<br>
+This code checks if all threads <i>in the current warp</i> have a triangle that fits in a single bin.  Note that which bin that is, might be different for every thread!  So we still don't know how many bits we'll need to set -- anywhere from one to 32.<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"> <pre><cpp><br>
+     <span style="color: rgb(0, 0, 255);">bool</span><span style="color: rgb(0, 0, 0);">  multi = (hix != lox || hiy != loy);<br>
+     <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (!__any(multi))<br>
+</span></span></cpp></pre><br>
+</div><br>
+<br>
+Instead of firing off 32 atomic "or"s, the code packs all triangles that touch the same bin into a single mask, and uses a single non-atomic assignment to set it.  I will try and let my annotations do the explaining of this magic <tt>while (!won)</tt> loop:<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"> <pre><cpp><br>
+     <span style="color: rgb(0, 0, 255);">do</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 0, 0);">{</span><br>
+         <span style="color: rgb(0, 128, 0);">//--bpe try writing the bin index of our triangle to the shared memory.  All threads who haven't yet</span><span style="color: rgb(0, 0, 0);"> <br>
+         <span style="color: rgb(0, 128, 0);">// processed their triangle (ie. set its bit in outMask) will try this, and conflict.</span><span style="color: rgb(0, 0, 0);"> <br>
+         s_broadcast[threadIdx.y + 16] = binIdx;<br>
+         <span style="color: rgb(0, 128, 0);">//--bpe figure out who actually won.  The ballot mask of threads whose bin index matches the value</span><span style="color: rgb(0, 0, 0);"> <br>
+         <span style="color: rgb(0, 128, 0);">// in s_broadcast is exactly the bitmask that needs to be written out.</span><span style="color: rgb(0, 0, 0);"> <br>
+         <span style="color: rgb(0, 0, 255);">int</span><span style="color: rgb(0, 0, 0);">  winner = s_broadcast[threadIdx.y + 16];<br>
+         won = (binIdx == winner);<br>
+         U32 mask = __ballot(won);<br>
+         <span style="color: rgb(0, 128, 0);">//--bpe 'winner' and 'mask' is the same for all threads, so this is not a write conflict.</span><span style="color: rgb(0, 0, 0);"> <br>
+         s_outMask[threadIdx.y][winner] = mask;                  <br>
+         <span style="color: rgb(0, 128, 0);">//--bpe did we manage to write out our triangle to the right bin? ie. was s_broadcast what it should</span><span style="color: rgb(0, 0, 0);"> <br>
+         <span style="color: rgb(0, 128, 0);">// be for our triangle? If so we 'won', exit loop, so we stop contending for s_broadcast.</span><span style="color: rgb(0, 0, 0);"> <br>
+     <span style="color: rgb(0, 0, 0);">}</span> <span style="color: rgb(0, 0, 255);">while</span><span style="color: rgb(0, 0, 0);">  (!won);<br>
+</span></span></span></span></span></span></span></span></span></span></cpp></pre><br>
+</div><br>
+<br>
+As mentioned in the paper, for the 2x2 case it's reasonable to assume that the cost of accurate rasterization is higher than just simply marking all four bins; so the code just uses four atomicOr calls.<br>
+<br>
+If at least one triangle in the warp is more complicated than 1x1/1x2/2x1/2x2, there is nothing to be gained from using those optimized branches because we'll have to execute the accurate rasterization loop anyway, for at least one lane.  So in that case all triangles follow that code path: both <tt>!__any(multi)</tt> and <tt>!__any(complex)</tt> failed.<br>
+<br>
+The full rasterization path traverses the triangle's entire AABB; for each pixel/bit, it computes the distance to the edges using the edge functions, and only when all three distances are non-negative, is the pixel considered inside, and is its bit set.  This is a conservative rasterization, snapping the vertices to tile boundaries.<br>
+<br>
+<br>
+<h2>Step Three: Checking output space</h2><br>
+At this point zero or more out of 512 bits are set for each 128x128 bin, indicating which triangles overlap the bin.  Counting how many such bits are set tells us how many triangles need to be written to the bin's segment.  So step three has two sub-parts: counting bits, and flagging the bins that are about to overflow their segment.<br>
+<br>
+The bitcounting again makes use of popc: <tt>__popc(s_outMask[0][thrInBlock])</tt> instantly tells us, for any thread with thrInBlock &lt; numBins, how many triangles touch the bin coming from the first 32 triangles. Summing for all 16 warps (512/32) results in the grand total in, well, <tt>total</tt>, and an <i>inclusive</i> prefix sum of the count in <tt>s_outCount</tt>.<br>
+<br>
+<tt>s_outOfs[binNumber]</tt> points into <tt>binSegData</tt>, telling us where the next triangle should go for a given bin.  We are out of space if writing out 'total' triangles for a bin would cross a segment boundary:<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"> <pre><cpp><br>
+    <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (((ofs - 1) &gt;&gt; CR_BIN_SEG_LOG2) != (((ofs - 1) + total) &gt;&gt; CR_BIN_SEG_LOG2))<br>
+</span></cpp></pre><br>
+</div><br>
+<br>
+Rather than using an atomicInc per overflowing bin to grab a new segment, we count the number of overflowing bins across the entire warp (ie. for up to 32 overflowing bins in one go, out of a total of maximum 16x16), and give each bin a unique index using prefix sum.<br>
+<br>
+Inside an if branch, <tt>__ballot(true)</tt> results in a bit mask showing which lanes followed the if-branch.  Thus <tt>__popc(__ballot(true) &amp; getLaneMaskLt())</tt> is the prefix sum of the "if" condition, in effect telling the thread "within the list of overflowing bins, what is my index?". This is stored in <tt>overIndex</tt>. We now have an overflow index unique <i>within the warp</i>.<br>
+<br>
+The first overflowing bin/thread in a warp is in charge of doing the atomicAdd to convert the local sums into a block-wide unique index.  Since the number of overflowing bins should be very low most of the time, this is probably cheaper than doing a straight prefix sum as in Step One.<br>
+<br>
+When all this is said and done, we have...<br>
+<ul><br>
+<li>... checked if a tile is overflowing (overIndex &gt;= 0);</li><br>
+<li>... and if so, what its index is in the "list of overflowing tiles" (0 &lt;= overIndex &lt; s_overTotal)</li><br>
+<li>s_overIndex[0..255] makes overIndex available to all threads, not just the first 256 that worked out the above overIndex value</li><br>
+<li>s_overTotal: the block-wide number of tiles/bins that is overflowing;</li><br>
+</ul><br>
+<br>
+<center>
+	<a href="20121114-overindex.png">
+		<img src="20121114-overindex.png" width="100%" />
+	</a>
+</center><br>
+<center><i>Example setup with four overflowing bins.</i></center><br>
+<br>
+<br>
+<h2>Step Four: Allocation</h2><br>
+Now that we have the grand total of overflowing bins in <tt>s_overTotal</tt>, allocation is simple: exactly one thread uses atomicAdd to increase <tt>numBinSegs</tt>.<br>
+<br>
+Each thread that's in charge of an overflowing bin can now do a simple bit of bookkeeping to set up its segment.  If a bin has never seen any triangles, its <tt>s_outOfs</tt> will be negative; we just allocated the first segment, so we go ahead and fill in <tt>binFirstSeg</tt>, see the diagram at the top of the post.<br>
+<br>
+If we already have a valid offset, then we need to set up <tt>binSegNext</tt> instead.  Having a valid value in <tt>s_outOfs</tt> also means we can compute our current segment: <tt>(offset-1) / 512</tt>.  That is the segment whose 'next' pointer needs to be changed to point to the newly allocated segment.<br>
+<br>
+What happens if the offset is exactly zero, modulo segment size?  In this case the previous iteration has written some triangles, and bumped the next write offset to <i>exactly</i> one-past-the-end of the segment it was filling up.  Cleverly enough, in that scenario <tt>(offset-1)/512</tt> <i>still</i> points to the segment that we just filled, which is <i>still</i> the segment whose next pointer needs to be updated. So it all works beautifully:<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"><pre><cpp><br>
+    <span style="color: rgb(0, 128, 0);">//--bpe</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// binSegNext is the next pointer of each segment.Its size is therefor</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// sizeof( bigSegData ) / sizeof( segment ) ==</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// sizeof( bigSegData ) &gt;&gt; CR_BIN_SEG_LOG2</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// which is / 512 resp. &gt;&gt; 9.</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// s_outOfs for 'our' tile is an absolute index into binSegData, so convert it back to a</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// segment index and mark that entry as pointing to segIdx.</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// Note: if ofs % CR_BIN_SEG_SIZE is zero, then subtracting 1 will move it back to the previous segment.</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// If the last batch ended at exactly the end of a segment, then this is what we want: the segment</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// that we filled up was in fact binSegNext[ ... based on ofs, but one to the left ...] so go and update</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// that linked list.</span><span style="color: rgb(0, 0, 0);"> <br>
+    binSegNext[(s_outOfs[thrInBlock] - 1) &gt;&gt; CR_BIN_SEG_LOG2] = segIdx;<br>
+</span></span></span></span></span></span></span></span></span></span></span></cpp></pre><br>
+</div><br>
+<br>
+Note that at this point, we've merely made sure that the current segment points to a valid new segment if the tile is overflowing (and that said new segment is in turn a proper list sentinel).  We haven't adjusted s_outOfs itself yet, which makes sense because only now is it finally time for...<br>
+<br>
+<h2>Step Five: Writing the output</h2><br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"><pre><cpp><br>
+    <span style="color: rgb(0, 128, 0);">//--bpe pre condition: if s_outOfs is &lt; 0 then we have initialized firstSeg to point to a newly allocated</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// segment and are ready to emit triangles.</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// if s_outOfs is &gt;= 0 then there may still be some free space in the current segment, depending on binSegCount;</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// we know we will eventually overflow if overIndex &gt;= 0, for which case we've already initialized a valid next</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// segment into binSegNext, with SEG_SIZE free elements.<br>
+</span></span></span></span></span></cpp></pre><br>
+</div><br>
+<br>
+For the final phase, we move away from "one thread per bin" and switch back to "one triangle per thread".  Since a triangle may overlap multiple bins, we need a small AABB loop to write the triangle ID to the segment of every bin that the triangle overlaps.  Fortunately both the AABB (lox,loy,hix,hiy) and the "does it actually overlap the bin" bitmask (s_outMask) are still available from Step Two.<br>
+<br>
+To be able to write a triangle ID to a bin segment concurrently, we again need a small, local prefix sum to make sure each lane writes to a unique location.  What about making sure the location is unique across multiple warps?  Well, we still have <tt>s_outCount</tt> from Step Three telling us how many bits are set for any given warp, inclusive-prefix-summed.  In short, if we need to write out a triangle, this will do the trick:<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"><pre><cpp><br>
+    <span style="color: rgb(0, 128, 0);">//--bpe local prefix sum: figure out how-many-th overlapping triangle I am within the warp (not SM)</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 0, 255);">int</span><span style="color: rgb(0, 0, 0);">  idx = __popc(outMask &amp; getLaneMaskLt());<br>
+    <span style="color: rgb(0, 128, 0);">//--bpe convert to a kernel-wide unique number by using the inclusive-prefix-summed totals for this</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// tile (# overlapping triangles) in s_outCount</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (threadIdx.y &gt; 0)<br>
+         idx += s_outCount[threadIdx.y-1][currBin];<br>
+</span></span></span></span></span></cpp></pre><br>
+</div><br>
+<br>
+If that index turns out to be bigger than the number of elements still available in the segment, we need to write the element into the next segment -- starting at position zero of course.  The trick is that at no point do we modify s_outOfs; thus when multiple warps are touching the same output queue, they will all consistently reach the same conclusion about where to write their output, and when to switch to the next segment, without any synchronization or atomic adds.<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"><pre><cpp><br>
+    <span style="color: rgb(0, 128, 0);">//--bpe get absolute index (not segment index) into binSegData.</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 0, 255);">int</span><span style="color: rgb(0, 0, 0);">  base = s_outOfs[currBin];<br>
+    <span style="color: rgb(0, 0, 255);">int</span><span style="color: rgb(0, 0, 0);">  free = (-base) &amp; (CR_BIN_SEG_SIZE - 1);<br>
+    <span style="color: rgb(0, 128, 0);">//--bpe if segment is full, go to the one we allocated; the unique segment number is in s_overIndex,</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 128, 0);">// the globally unique base is in allocBase. 'Minus free' means we start at zero.</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (idx &gt;= free)<br>
+         idx += ((allocBase + s_overIndex[currBin]) &lt;&lt; CR_BIN_SEG_LOG2) - free;<br>
+    <span style="color: rgb(0, 0, 255);">else</span><span style="color: rgb(0, 0, 0);"> <br>
+         idx += base;<br>
+</span></span></span></span></span></span></span></cpp></pre><br>
+</div><br>
+<br>
+It's only when all threads have written their triangles to all bins, that it's time to bump up the segment write pointers in s_outOfs.  For this we switch back to one-thread-per-bin.<br>
+<br>
+If there was no overflow then it's easy enough -- <tt>s_outOfs[bin] += total</tt>.  If there is overflow then that same value, s_outOfs + total, needs to be rebased to point inside the newly allocated segment.<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"><pre><cpp><br>
+    <span style="color: rgb(0, 0, 255);">int</span><span style="color: rgb(0, 0, 0);">  addr = oldOfs + total;<br>
+    <span style="color: rgb(0, 128, 0);">//--bpe move into the next segment.</span><span style="color: rgb(0, 0, 0);"> <br>
+    addr = ((addr - 1) &amp; (CR_BIN_SEG_SIZE - 1)) + 1;<br>
+    addr += (allocBase + overIndex) &lt;&lt; CR_BIN_SEG_LOG2;<br>
+    s_outOfs[thrInBlock] = addr; <br>
+</span></span></cpp></pre><br>
+</div><br>
+<br>
+... and that's that!<br>
+<br>
+<h2>The next batch</h2><br>
+... well, <i>almost</i>.  We keep repeating this entire five step process until we've exhausted the number of triangles allocated to this SM. Recall from the paper that "step zero" is to grab a large number of triangles from the input.<br>
+<br>
+Once those are exhausted, we can simply grab a new large chunk, but there's a snatch.<br>
+<br>
+We want to preserve strict input order.  But if we simply grabbed more triangles and kept going, there would be partially filled output segments for various bins, and the newly grabbed triangles would be added to those.  In short, triangles from way down the line would be moved forward, sneaking in behind a previous batch of triangles.<br>
+<br>
+For this reason it's important to flush the currently outstanding segments, and forcibly allocate a brand new, all empty segment for every bin that's partially filled.  If it's not partially filled, then either it's unallocated (<tt>s_outOfs &lt; 0</tt>) in which case we do nothing.  Or we filled it completely, in which case <tt>s_outOfs</tt> modulo segment size will be zero, and we'll allocate a new segment automatically, as explained earlier.<br>
+<br>
+In fact, the most convenient way to allocate a new segment for every partial-fill is precisely to pretend that it was filled up completely: just record the correct number of elements in <tt>binSegCount</tt>, and advance <tt>s_outOfs</tt> to the end of the segment:<br>
+<br>
+<div style="color: black; border: 1px solid rgb(221, 221, 221); overflow: auto; width: 99.5%;"><pre><cpp><br>
+    <span style="color: rgb(0, 0, 255);">int</span><span style="color: rgb(0, 0, 0);">  ofs = s_outOfs[thrInBlock];<br>
+    <span style="color: rgb(0, 0, 255);">if</span><span style="color: rgb(0, 0, 0);">  (ofs &amp; (CR_BIN_SEG_SIZE-1))   <span style="color: rgb(0, 128, 0);">// segment partially filled? ie not -1 and not zero modulo segment size.</span><span style="color: rgb(0, 0, 0);"> <br>
+    <span style="color: rgb(0, 0, 0);">{</span><br>
+        <span style="color: rgb(0, 128, 0);">//--bpe note: using "ofs-1" would make no difference here. It would only be wrong if ofs % SEG_SIZE is zero.</span><span style="color: rgb(0, 0, 0);"> <br>
+        <span style="color: rgb(0, 128, 0);">// However, in that case the above 'if' fails and we never get here.  It means we got exactly to a boundary of</span><span style="color: rgb(0, 0, 0);"> <br>
+        <span style="color: rgb(0, 128, 0);">// the next segment after the above loop; nothing to flush, and the next iteration will do the right thing </span><span style="color: rgb(0, 0, 0);"> <br>
+        <span style="color: rgb(0, 128, 0);">// (see comment below about ofs manipulation).  </span><span style="color: rgb(0, 0, 0);"> <br>
+        <span style="color: rgb(0, 128, 0);">// Also binSegCount has been set up with the correct 'default' value for that case (full segment).</span><span style="color: rgb(0, 0, 0);"> <br>
+        <span style="color: rgb(0, 0, 255);">int</span><span style="color: rgb(0, 0, 0);">  seg = ofs &gt;&gt; CR_BIN_SEG_LOG2;<br>
+ <br>
+        binSegCount[seg] = ofs &amp; (CR_BIN_SEG_SIZE-1);<br>
+ <br>
+        <span style="color: rgb(0, 128, 0);">//--bpe </span><span style="color: rgb(0, 0, 0);"> <br>
+        <span style="color: rgb(0, 128, 0);">// About the 'minus-and': this is equivalent to &amp; !(CR_BIN_SEG_SIZE-1), ie. it 'ands' with b111..111000000000.</span><span style="color: rgb(0, 0, 0);"> <br>
+        <span style="color: rgb(0, 128, 0);">// So ofs will be zero, modulo segment size, which will trigger an allocation (because ofs-1 will definitely</span><span style="color: rgb(0, 0, 0);"> <br>
+        <span style="color: rgb(0, 128, 0);">// be in a different segment than ofs-1+total for total &gt; 0), but will not trigger initialization of the first </span><span style="color: rgb(0, 0, 0);"> <br>
+        <span style="color: rgb(0, 128, 0);">// linked list node (which only happens if ofs &lt; 0).</span><span style="color: rgb(0, 0, 0);"> <br>
+        <span style="color: rgb(0, 128, 0);">//</span><span style="color: rgb(0, 0, 0);"> <br>
+        <span style="color: rgb(0, 128, 0);">// About the addition: we are currently working in segment (ofs-1) &gt;&gt; 9.  When we allocate a new segment,</span><span style="color: rgb(0, 0, 0);"> <br>
+        <span style="color: rgb(0, 128, 0);">// we need to add it to the linked list. So we want to set ofs to zero, to trigger allocation of a new</span><span style="color: rgb(0, 0, 0);"> <br>
+        <span style="color: rgb(0, 128, 0);">// segment, but we also want to set it up so when we look at the "current" segment using (ofs-1)&gt;&gt;9, we</span><span style="color: rgb(0, 0, 0);"> <br>
+        <span style="color: rgb(0, 128, 0);">// end up in the segment we just filled up, so we can write its binSegNext value.  </span><span style="color: rgb(0, 0, 0);"> <br>
+        <span style="color: rgb(0, 128, 0);">// The solution is to move ofs to element zero of the first segment behind the current one.</span><span style="color: rgb(0, 0, 0);"> <br>
+        <span style="color: rgb(0, 128, 0);">// See the adjustment of binSegNext when we allocate memory, which works out nicely if s_outOfs is exactly zero.</span><span style="color: rgb(0, 0, 0);"> <br>
+        s_outOfs[thrInBlock] = (ofs + CR_BIN_SEG_SIZE - 1) &amp; -CR_BIN_SEG_SIZE;<br>
+    <span style="color: rgb(0, 0, 0);">}</span><br>
+</span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></cpp></pre><br>
+</div><br>
+<br>
+... and that's that! For real this time.  This concludes, ah, the first step in this pipeline -- the bin rasterization.  Happy warping :)
+</div>
+
+<div class="iteminfo">
+  posted at 04:44:50 PM on 11/14/2012
+  by <a href="default_052.html" indepth="true">peirz</a> -
+  Category: <a href="default_053.html" indepth="true">zwans</a> -
+  Tag: <a href="default_049.html" indepth="true">programming</a> / <a href="default_060.html" indepth="true">graphics</a> / <a href="default_002.html" indepth="true">rendering</a> / <a href="default_063.html" indepth="true">deferred</a> / <a href="default_061.html" indepth="true">cudaraster</a>
+  
+</div>
+
+</div><!-- end of the contents div -->
+
+<!-- definition of the logo (left-top) -->
+<div class="logo">
+ <a href="index.html" indepth="true"><img src="beer.jpg" alt="" width="150" height="94"></a>
+ <br><center><font size="-2">pookie sayz: "feh"</font></center>
+</div>
+
+</div>
+
+</body></html>
