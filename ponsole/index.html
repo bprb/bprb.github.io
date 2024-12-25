@@ -1,0 +1,158 @@
+<style>
+body { background: #bbb; }
+h3   { margin-bottom: 0.25em; margin-top: 1.5em; }
+pre  { background: #aaa; width: 50%; padding: 1em; color: #116; }
+code { background: #aaa; color: #116; }
+</style>
+<h1>Ponsole</h1>
+
+This is a <i>binary only</i> and <i>highly opinionated</i> console terminal for Windows.
+
+<p>
+You probably don't want to use it. I suggest <a href="https://wezfurlong.org/wezterm/index.html">WezTerm</a> instead.
+
+<p>
+This binary...
+<ul>
+	<li>does not include source code</li>
+	<li>does not support the mouse</li>
+	<li>does not support resizing</li>
+	<li>does not support scrollback<sup>†</sup></li>
+	<li>only supports the <code>^[</code> sequences I need (nvim, bat, ov, yazi)</li>
+	<ul>
+		<li>...and might hang if it sees others</li>
+	</ul>
+	<li>handles asserts and errors with <code>exit(-1)</code>. It didn't crash, it seppuku'd.</li>
+	<li>assumes tons of RAM (1M lines of history per tab)</li>
+	<li>assumes your Vulkan matches mine (extensions, formats, cap bits)</li>
+</ul>
+
+<p>
+<sup>†</sup> see <code>terminal.save()</code> instead.
+
+<p>
+All of these are <i>by design</i>.
+In short, it suits my needs, and quite likely not yours.
+
+
+<p>
+
+<i>...but on the other hand...</i>
+
+<h3>Multiple fonts</h3>
+
+You can use nvim with multiple fonts:
+
+<p>
+<img src="ponsole_demo.png" width=854 height=480 />
+
+<ul>
+	<li>The code uses Sauce Code Pro nerdfont</li>
+	<li>The popup uses <a href="https://github.com/ryanoasis/nerd-fonts/tree/master/patched-fonts/Terminus">Terminess</a> (and casts a shadow)</li>
+	<li>Inlay hints use a smaller Terminess</li>
+	<li>Comments use <a href="https://github.com/alerque/libertinus/releases">Libertinus</a></li>
+	<li>Statusline and <code>rnu</code> use <a href="https://gitlab.com/velvetyne/lack">Lack</a></li>
+</ul>
+
+The console lets you pick fonts based on foreground or background colors.
+Hacky and fragile but it works.  See the included demo config file.  For example:
+
+<pre><code>" in vim
+highlight Comment guifg=#89898c
+
+-- in ponsole_run.lua
+terminal.set_tab_color_font(0, true, hex_color(0x89/255, 0x89/255, 0x8c/255), 1)
+
+-- in ponsole_cfg.lua
+config = {
+    ...
+	fonts = {
+		-- default goes here
+		...
+		-- comment font
+		"LibertinusMono-Regular.ttf",
+</code></pre>
+
+<p>In the real world, we perhaps need a font equivalent
+of the Kitty Graphics Protocol.  Perhaps there already is one (CSI SCS?).
+
+<h3>Conceal with strings</h3>
+
+<p>
+You can rewrite output on the fly.  For example, replace
+<code>uint32_t</code> with <code>u32</code>.
+<br />This is essentially the vim conceal
+feature, but allowing a substitution string instead of just a single character.
+It is however a simple match, no regex.
+
+<p>
+<img src="conceal.png" width=524 height=202 />
+
+<p>
+Since nvim doesn't know about the rewrite, this would break the UI, so in reality
+the example substitution will be <code>u32·····</code> (showing dots for spaces).
+
+<h3>Other</h3>
+
+<p>
+Lua 5.3 is embedded, so you can script opening tabs, sending keys, custom conceals, etc.
+
+<p>
+Set it all up with config scripts, and/or use the Quake-style dropdown
+(ctrl-shift-tilde).
+<br />
+Type <code>help ""</code> in the dropdown to get started, or
+<code>dofile ...</code>; it's a Lua prompt.
+
+<p>
+There is basic background image support for anything <code>stb_image</code> can load.<br />
+The image always fits vertically, and assumes <i>output referred sRGB, Rec709 primaries, D65</i>.
+<br />
+Pixels are multiplied with the background gradient -- which is always horizontal by the way.
+
+<p>
+HDR is supported when the primary monitor is HDR, and
+"HDR/SDR brightness balance" &gt; 10 (in "Windows HD color settings").
+<br />
+You can crank the cursor intensity, and also remap colors from SDR to HDR in the same
+spirit as font changes:
+
+<pre><code>" in vim
+highlight Search guifg=#ffff80
+
+-- in ponsole_run.lua
+-- make &amp;hlsearch really pop out
+terminal.set_tab_remap_color(0, true, hex_color(0xff/255, 0xff/255, 0x80/255), { 5, 5, 2.5, 1 })
+</code></pre>
+
+
+<h2>Download</h2>
+
+I can't provide support, sorry.<br />
+To debug, try running with <code>-o</code> and study the spam in <code>dbgview64</code>.
+
+<p>
+Release: 2024-12-25
+
+<p>
+<a href="ponsole_2024_12_25.7z">ponsole_2024_12_25.7z</a> - 249KB
+
+<h3>Credits</h3>
+
+This binary uses:
+
+<ul>
+	<li><a href="https://www.lua.org/home.html">Lua 5.3</a> (MIT license)</li>
+	<li><a href="https://github.com/nothings/stb/blob/master/stb_truetype.h">stb_truetype</a> (public domain)</li>
+	<li><a href="https://github.com/nothings/stb/blob/master/stb_image.h">stb_image</a> (public domain)</li>
+</ul>
+
+<h3>History</h3>
+
+<ul>
+	<li>2024-12-25
+		<ul>
+			<li>First release</li>
+		</ul>
+	</li>
+</ul>
