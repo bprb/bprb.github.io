@@ -3,13 +3,44 @@ body { background: #bbb; }
 h3   { margin-bottom: 0.25em; margin-top: 1.5em; }
 pre  { background: #aaa; width: 50%; padding: 1em; color: #116; }
 code { background: #aaa; color: #116; }
+
+
+.lua            { background-color: #101d23; width: 50%; color: #ffffff}
+.lua .-variable { color: #e0e2ea}
+.lua .Comment   { color: #a59b9b}
+.lua .Constant  { color: #efecca}
+.lua .Delimiter { color: #e0e2ea}
+.lua .Function  { color: #8cf8f7}
+.lua .NonText   { color: #a6a6a6}
+.lua ..Operator { color: #e0e2ea}
+.lua .Special   { color: #b692c1}
+.lua .Statement { color: #7bd3d4; font-weight: bold}
+.lua .String    { color: #b3f6c0}
+.lua .Type      { color: #6cd69a}
+.lua pre        { background: none; }
+
+.vim  {background-color: #000000; width: 50%; color: #d4d4d9}
+.vim .String       { color: #afafb2}
+.vim .Identifier   { color: #d4d4d9}
+.vim .vimCommand   { color: #ffefbf}
+.vim .Operator     { color: #ffbf00}
+.vim .-spell       { }
+.vim .Keyword      { color: #ff8000}
+.vim .vimHiKeyList { }
+.vim .Comment      { color: #89898c}
+.vim .Constant     { color: #cfe040}
+.vim .Type         { color: #8fa3bf}
+.vim pre        { background: none; }
+
+
 </style>
 <h1>Ponsole</h1>
 
-This is a <i>binary only</i> and <i>highly opinionated</i> console terminal for Windows.
+This is a <i>binary only</i> and <i>experimental</i> console terminal for Windows.
 
 <p>
-You probably don't want to use it. I suggest <a href="https://wezfurlong.org/wezterm/index.html">WezTerm</a> instead.
+It's a personal playground to try out feature ideas.
+You probably don't want to use it. Check out <a href="https://wezfurlong.org/wezterm/index.html">WezTerm</a> instead.
 
 <p>
 This binary...
@@ -17,7 +48,6 @@ This binary...
 	<li>does not include source code</li>
 	<li>does not support the mouse</li>
 	<li>does not support resizing</li>
-	<li>does not support scrollback<sup>†</sup></li>
 	<li>only supports the <code>^[</code> sequences I need (nvim, bat, ov, yazi)</li>
 	<ul>
 		<li>...and might hang if it sees others</li>
@@ -25,23 +55,16 @@ This binary...
 	<li>handles asserts and errors with <code>exit(-1)</code>. It didn't crash, it seppuku'd.</li>
 	<li>assumes tons of RAM (1M lines of history per tab)</li>
 	<li>assumes your Vulkan matches mine (extensions, formats, cap bits)</li>
+	<li>only half supports IME</li>
 </ul>
 
 <p>
-<sup>†</sup> see <code>terminal.save()</code> instead.
-
-<p>
 All of these are <i>by design</i>.
-In short, it suits my needs, and quite likely not yours.
+<br />In short, this is a laboratory to try out ideas, not a serious production tool for the general public.
 
+<p>But you're welcome to try it out if you want to see these for yourself:
 
-<p>
-
-<i>...but on the other hand...</i>
-
-<h3>Multiple fonts</h3>
-
-You can use nvim with multiple fonts:
+<h3>Multiple fonts in vim</h3>
 
 <p>
 <img src="ponsole_demo.png" width=854 height=480 />
@@ -55,23 +78,36 @@ You can use nvim with multiple fonts:
 </ul>
 
 The console lets you pick fonts based on foreground or background colors.
-Hacky and fragile but it works.  See the included demo config file.  For example:
+Hacky and fragile but it works. For example:
 
-<pre><code>" in vim
-highlight Comment guifg=#89898c
+<div class="vim"><pre>
+<span class="Comment"><span class="Comment"><span class="-spell">&quot; in vim</span></span></span>
+<span class="vimCommand"><span class="Keyword">highlight</span></span> <span class="Type"><span class="Type">Comment</span></span><span class="vimHiKeyList"> </span><span class="Type"><span class="Identifier">guifg</span></span><span class="vimHiKeyList"><span class="Operator">=</span></span><span class="String"><span class="Constant">#89898c</span></span>
+</pre></div>
 
--- in ponsole_run.lua
-terminal.set_tab_color_font(0, true, hex_color(0x89/255, 0x89/255, 0x8c/255), 1)
+<div class="lua"><pre>
+<span class="Comment"><span class="Comment"><span class="-spell">-- in ponsole_run.lua</span></span></span>
+<span class="-variable">terminal</span><span class="Delimiter">.</span><span class="-variable"><span class="-variable"><span class="Function">set_tab_color_font</span></span></span><span class="Delimiter">(</span><span class="Constant"><span class="Constant">0</span></span><span class="Delimiter">,</span> <span class="Constant"><span class="Constant">true</span></span><span class="Delimiter">,</span> <span class="Constant"><span class="Constant">0x89898c</span></span><span class="Delimiter">,</span> <span class="Constant"><span class="Constant">1</span></span><span class="Delimiter">)</span>
+</pre></div>
 
--- in ponsole_cfg.lua
-config = {
-    ...
-	fonts = {
-		-- default goes here
-		...
-		-- comment font
-		"LibertinusMono-Regular.ttf",
-</code></pre>
+<p>
+This means: in the current tab (<code>0</code>), when the foreground (<code>true</code>) color is <code>0x89898c</code>, use
+font <code>1</code>.
+<p>
+That's a zero-based index into <code>config.fonts</code>:
+
+<div class="lua"><pre>
+<span class="Comment"><span class="Comment"><span class="-spell">-- in ponsole_cfg.lua</span></span></span>
+<span class="-variable">config</span> <span class="Operator"><span class="Operator">=</span></span> <span class="Type"><span class="Delimiter">{</span></span>
+    <span class="Operator"><span class="Special">...</span></span>
+<span class="NonText">    </span><span class="-variable">fonts</span> <span class="Operator"><span class="Operator">=</span></span> <span class="Type"><span class="Delimiter">{</span></span>
+<span class="NonText">    </span><span class="NonText">    </span><span class="Comment"><span class="Comment"><span class="-spell">-- default goes here</span></span></span>
+<span class="NonText">    </span><span class="NonText">    </span><span class="Operator"><span class="Special">...</span></span>
+<span class="NonText">    </span><span class="NonText">    </span><span class="Comment"><span class="Comment"><span class="-spell">-- comment font</span></span></span>
+<span class="NonText">    </span><span class="NonText">    </span><span class="String"><span class="String">&quot;LibertinusMono-Regular.ttf&quot;</span></span><span class="Delimiter">,</span>
+</pre></div>
+
+<p>See the included demo config file for more details.
 
 <p>In the real world, we perhaps need a font equivalent
 of the Kitty Graphics Protocol.  Perhaps there already is one (CSI SCS?).
@@ -81,8 +117,8 @@ of the Kitty Graphics Protocol.  Perhaps there already is one (CSI SCS?).
 <p>
 You can rewrite output on the fly.  For example, replace
 <code>uint32_t</code> with <code>u32</code>.
-<br />This is essentially the vim conceal
-feature, but allowing a substitution string instead of just a single character.
+<p>This is essentially the vim conceal
+feature, but allowing a substitution <i>string</i> instead of just a single character.
 It is however a simple match, no regex.
 
 <p>
@@ -92,7 +128,32 @@ It is however a simple match, no regex.
 Since nvim doesn't know about the rewrite, this would break the UI, so in reality
 the example substitution will be <code>u32·····</code> (showing dots for spaces).
 
-<h3>Other</h3>
+<h3>Basic HDR</h3>
+
+<p>
+HDR is supported when the primary monitor is HDR, and
+"HDR/SDR brightness balance" &gt; 10 (in "Windows HD color settings").
+
+<p>
+The actual terminal is still just ANSI, so the idea is to remap
+colors to brighter replacements using the same trick as fonts:
+
+<div class="vim"><pre>
+<span class="Comment"><span class="Comment"><span class="-spell">&quot; in vim</span></span></span>
+<span class="vimCommand"><span class="Keyword">highlight</span></span> <span class="Type"><span class="Type">Search</span></span><span class="vimHiKeyList"> </span><span class="Type"><span class="Identifier">guifg</span></span><span class="vimHiKeyList"><span class="Operator">=</span></span><span class="String"><span class="Constant">#ffff80</span></span>
+</pre></div>
+
+<div class="lua"><pre>
+<span class="Comment"><span class="Comment"><span class="-spell">-- in ponsole_run.lua</span></span></span>
+<span class="Comment"><span class="Comment"><span class="-spell">-- make &amp;hlsearch really pop out</span></span></span>
+<span class="-variable">terminal</span><span class="Delimiter">.</span><span class="-variable"><span class="-variable"><span class="Function">set_tab_remap_color</span></span></span><span class="Delimiter">(</span><span class="Constant"><span class="Constant">0</span></span><span class="Delimiter">,</span> <span class="Constant"><span class="Constant">true</span></span><span class="Delimiter">,</span> <span class="Constant"><span class="Constant">0xffff80</span></span><span class="Delimiter">,</span> <span class="Type"><span class="Delimiter"><span class="Special">{</span></span></span> <span class="Constant"><span class="Constant">5</span></span><span class="Delimiter">,</span> <span class="Constant"><span class="Constant">5</span></span><span class="Delimiter">,</span> <span class="Constant"><span class="Constant">2.5</span></span><span class="Delimiter">,</span> <span class="Constant"><span class="Constant">1</span></span> <span class="Type"><span class="Delimiter"><span class="Special">}</span></span></span><span class="Delimiter">)</span>
+</pre></div>
+
+<p>
+You can also crank up the cursor (globally) with
+<code>config.hdr_cursor_scale</code>.
+
+<h3>Lua scripting</h3>
 
 <p>
 Lua 5.3 is embedded, so you can script opening tabs, sending keys, custom conceals, etc.
@@ -105,26 +166,28 @@ Type <code>help ""</code> in the dropdown to get started, or
 <code>dofile ...</code>; it's a Lua prompt.
 
 <p>
-There is basic background image support for anything <code>stb_image</code> can load.<br />
+Example: <code>ctrl-shift-B</code> sends "ESC :wa" to vim and starts a build in
+a second tab (...if somehow <code>:make</code> and <code>:terminal</code> won't
+do).
+<br />Neither tab needs to be focused/visible.
+
+<div class="lua"><pre>
+<span class="-variable">terminal</span><span class="Delimiter">.</span><span class="-variable"><span class="-variable"><span class="Function">map_key</span></span></span><span class="Delimiter">(</span><span class="String"><span class="String">&quot;&lt;C-S-b&gt;&quot;</span></span><span class="Delimiter">,</span> <span class="Function"><span class="Statement">function</span></span><span class="Delimiter">(</span><span class="Delimiter">)</span>
+<span class="NonText">·   </span><span class="NonText">·   </span><span class="-variable">terminal</span><span class="Delimiter">.</span><span class="-variable"><span class="-variable"><span class="Function">send</span></span></span><span class="Delimiter">(</span><span class="-variable">vim_tab</span><span class="Delimiter">,</span>   <span class="String"><span class="String">&quot;</span><span class="Special"><span class="Special">\027</span></span><span class="String">:wa</span><span class="Special"><span class="Special">\r</span></span><span class="String">&quot;</span></span><span class="Delimiter">)</span>   <span class="Comment"><span class="Comment"><span class="-spell">-- \r == press enter</span></span></span>
+<span class="NonText">·   </span><span class="NonText">·   </span><span class="-variable">terminal</span><span class="Delimiter">.</span><span class="-variable"><span class="-variable"><span class="Function">send</span></span></span><span class="Delimiter">(</span><span class="-variable">build_tab</span><span class="Delimiter">,</span> <span class="String"><span class="String">&quot;build.bat<span class="Special">\r</span>&quot;</span></span><span class="Delimiter">)</span>
+<span class="NonText">·   </span><span class="NonText">·   </span><span class="-variable">terminal</span><span class="Delimiter">.</span><span class="-variable"><span class="-variable"><span class="Function">set_tab</span></span></span><span class="Delimiter">(</span><span class="-variable">build_tab</span><span class="Delimiter">)</span>             <span class="Comment"><span class="Comment"><span class="-spell">-- focus the build</span></span></span>
+<span class="NonText">·   </span><span class="Function"><span class="Statement">end</span></span> <span class="Delimiter">)</span>
+</pre></div>
+
+<h3>Other</h3>
+
+<p>
+There is simple background image support for anything <code>stb_image</code> can load.<br />
 The image always fits vertically, and assumes <i>output referred sRGB, Rec709 primaries, D65</i>.
 <br />
 Pixels are multiplied with the background gradient -- which is always horizontal by the way.
 
 <p>
-HDR is supported when the primary monitor is HDR, and
-"HDR/SDR brightness balance" &gt; 10 (in "Windows HD color settings").
-<br />
-You can crank the cursor intensity, and also remap colors from SDR to HDR in the same
-spirit as font changes:
-
-<pre><code>" in vim
-highlight Search guifg=#ffff80
-
--- in ponsole_run.lua
--- make &amp;hlsearch really pop out
-terminal.set_tab_remap_color(0, true, hex_color(0xff/255, 0xff/255, 0x80/255), { 5, 5, 2.5, 1 })
-</code></pre>
-
 
 <h2>Download</h2>
 
@@ -132,10 +195,10 @@ I can't provide support, sorry.<br />
 To debug, try running with <code>-o</code> and study the spam in <code>dbgview64</code>.
 
 <p>
-Release: 2024-12-25
+Release: 2025-01-14
 
 <p>
-<a href="ponsole_2024_12_25.7z">ponsole_2024_12_25.7z</a> - 249KB
+<a href="ponsole_2025_01_14.7z">ponsole_2025_01_14.7z</a> - 246KB
 
 <h3>Credits</h3>
 
@@ -150,6 +213,32 @@ This binary uses:
 <h3>History</h3>
 
 <ul>
+	<li>2025-??-??
+		<ul>
+			<li>Added scrollback (ctrl-page-up/down)
+				<ul>
+					<li>Note: can't scroll while visually selecting</li>
+					<li>If you need these keys: <code>terminal.unmap_key('&lt;C-PageUp&gt;')</code></li>
+				</ul>
+			<li>Fix blending bug, text is less "thin" now</li>
+			<li>Optimizations</li>
+			<li>Colors are now specified with "normal" (ODR) sRGB <code>0xRRGGBB</code> values
+				<ul>
+					<li><code>hex_color()</code> is gone</li>
+					<li>this matches vim <code>hi guifg=#rrggbb</code> for easier copy paste</li>
+					<li>optionally, specify alpha for replacement colors (= <code>0xAARRGGBB</code>)</li>
+				</ul>
+			<li>Shift-TAB works now</li>
+			<li>Lua: <code>send</code> now takes the tab id as first param: <code>terminal.send(tab_id, "text to send")</code>
+				<ul>
+					<li>instead of <code>send("text to send", tab_id)</code></li>
+				</ul>
+			<li>Lua: <code>terminal.add_conceal()</code> instead of <code>add_filter</code></li>
+			<li>Hide mouse cursor when not <code>config.enable_mouse_move</code></li>
+			<li>Default foreground color (<code>0xcecece</code>) can now also be remapped and/or use a custom font</li>
+			<li>Font paths can start with <code>~</code> to point at user folder</li>
+			<li>Half-baked IME in the terminal (but not dropdown prompt which can't do UTF8)</li>
+		</ul>
 	<li>2024-12-25
 		<ul>
 			<li>First release</li>
